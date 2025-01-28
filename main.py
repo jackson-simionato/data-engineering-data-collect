@@ -2,6 +2,8 @@ import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 import pandas as pd
+from tenacity import retry, stop_after_attempt, wait_exponential
+from requests.exceptions import RequestException, Timeout, ConnectionError
 
 cookies = {
 '_gid': 'GA1.2.171527606.1737985240',
@@ -29,6 +31,11 @@ headers = {
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
 }
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    reraise=True
+)
 def get_content(url, headers=headers, cookies=cookies):
     """
     Fetch content from given URL using provided headers and cookies.
@@ -40,13 +47,29 @@ def get_content(url, headers=headers, cookies=cookies):
         
     Returns:
         requests.Response: Response object from the request
+        
+    Raises:
+        RequestException: For any request-related errors after retries
     """
-    response = requests.get(url, cookies=cookies, headers=headers)
-
-    if response.status_code != 200:
-        print('Erro ao acessar a página')
-    
-    return response
+    try:
+        response = requests.get(
+            url, 
+            cookies=cookies, 
+            headers=headers,
+            timeout=(3, 10)  # (connect timeout, read timeout)
+        )
+        response.raise_for_status()
+        return response
+        
+    except Timeout:
+        print(f"Timeout occurred while accessing {url}")
+        raise
+    except ConnectionError as e:
+        print(f"Connection error occurred while accessing {url}: {str(e)}")
+        raise
+    except RequestException as e:
+        print(f"Error occurred while accessing {url}: {str(e)}")
+        raise
     
 def get_basic_data(response):
     """
@@ -110,15 +133,17 @@ def get_character_data(url):
     Returns:
         dict: Combined character data or None if fetch fails
     """
-    response = get_content(url)
-
-    if response.status_code != 200:
+    try:
+        response = get_content(url)
+        character_data = get_basic_data(response)
+        character_data['Aparicoes'] = get_appearences_data(response)
+        return character_data
+    except RequestException as e:
+        print(f"Failed to get character data for {url}: {str(e)}")
         return None
-    
-    character_data = get_basic_data(response)
-    character_data['Aparicoes'] = get_appearences_data(response)
-
-    return character_data
+    except Exception as e:
+        print(f"Unexpected error processing character {url}: {str(e)}")
+        return None
 
 def get_character_links(url='https://www.residentevildatabase.com/personagens/'):
     """
@@ -129,44 +154,83 @@ def get_character_links(url='https://www.residentevildatabase.com/personagens/')
         
     Returns:
         list: List of character page URLs
-    """
-    soup = BeautifulSoup(get_content(url).text, 'html.parser')
-    page_content = soup.find('div', class_='td-page-content')
-    h3s = page_content.find_all('h3')
-
-    characters = []
-
-    for h3 in h3s:
-        letter_characters = [anchor['href'] for anchor in 
-                            h3.
-                            find_next('p').
-                            find_all('a')]
         
-        characters.extend(letter_characters)
+    Raises:
+        RequestException: If unable to fetch the character listing page
+    """
+    try:
+        response = get_content(url)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        page_content = soup.find('div', class_='td-page-content')
+        if not page_content:
+            raise ValueError("Could not find page content div")
+            
+        h3s = page_content.find_all('h3')
+        if not h3s:
+            raise ValueError("No character sections found")
 
-    return characters
+        characters = []
+        for h3 in h3s:
+            try:
+                paragraph = h3.find_next('p')
+                if not paragraph:
+                    print(f"Warning: No paragraph found after header {h3.text}")
+                    continue
+                    
+                links = paragraph.find_all('a')
+                letter_characters = [anchor['href'] for anchor in links if 'href' in anchor.attrs]
+                characters.extend(letter_characters)
+            except Exception as e:
+                print(f"Error processing section {h3.text}: {str(e)}")
+                continue
 
-# Get list of all character URLs
-characters = get_character_links()
+        if not characters:
+            raise ValueError("No character links found")
+            
+        return characters
+    except Exception as e:
+        print(f"Failed to get character links: {str(e)}")
+        raise
 
-print(len(characters))
-print(characters)
+try:
+    # Get list of all character URLs
+    print("Fetching character URLs...")
+    characters = get_character_links()
+    print(f"Found {len(characters)} characters")
 
-# Scrape data for each character
-data_list = []
-for url in tqdm(characters):
-    print(url)
-    character_data = get_character_data(url)
+    # Scrape data for each character
+    data_list = []
+    for url in tqdm(characters, desc="Scraping characters"):
+        character_data = get_character_data(url)
+        if character_data:
+            character_data['url'] = url
+            data_list.append(character_data)
+        else:
+            print(f"Warning: Unable to fetch data for {url}")
 
-    if character_data:
-        character_data['url'] = url
-        data_list.append(character_data)
+    if not data_list:
+        raise ValueError("No character data was collected")
 
-# Create DataFrame and save to parquet
-df = pd.DataFrame(data_list)
-print(df[~df['de nascimento'].isna()])
-df.to_parquet('../dados/personagens.parquet', index=False)
+    # Create DataFrame and ensure directory exists
+    print("Saving data to parquet...")
+    df = pd.DataFrame(data_list)
+    
+    # Create the dados directory if it doesn't exist
+    import os
+    os.makedirs('dados', exist_ok=True)
+    
+    # Save to parquet
+    df.to_parquet('dados/personagens.parquet', index=False)
+    
+    # Verify data
+    print("Verifying saved data...")
+    df_parquet = pd.read_parquet('dados/personagens.parquet')
+    print(f"Successfully saved data for {len(df_parquet)} characters")
+    print("\nSample of characters with wrong birth dates field:")
+    print(df[~df['de nascimento'].isna()])
+    print("\nFirst few records:")
+    print(df_parquet.head())
 
-# Save and verify data
-df_parquet = pd.read_parquet('../dados/personagens.parquet')
-print(df_parquet.head())
+except Exception as e:
+    print(f"Critical error: {str(e)}")
+    raise
