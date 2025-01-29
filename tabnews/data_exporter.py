@@ -5,7 +5,7 @@ from pathlib import Path
 
 class DataExporter:
     def __init__(self):
-        self.datetime_now = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        self.datetime_now = datetime.now().strftime('%Y-%m-%d_%H-%M-%S-%f')
 
     def __create_filename(self, filename, extension: str):
         folder = f'tabnews/dados/{extension}'
