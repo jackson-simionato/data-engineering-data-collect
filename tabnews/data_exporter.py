@@ -43,10 +43,12 @@ class DataExporter:
 
     def export_data(self, data, filename, type):
         if type == 'csv':
+            data = pd.DataFrame(data)
             self.__export_to_csv(data, filename)
         elif type == 'json':
             self.__export_to_json(data, filename)
         elif type == 'parquet':
+            data = pd.DataFrame(data)
             self.__export_to_parquet(data, filename)
         else:
             raise ValueError('Invalid type. Must be csv or json')

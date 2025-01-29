@@ -30,11 +30,7 @@ def get_content_last_hours(delta_hours:int, format:str = 'json'):
                 data = [dict_data for dict_data in data if datetime.strptime(dict_data['created_at'], '%Y-%m-%dT%H:%M:%S.%fZ') >= stop_time]
                 keepsearching = False
 
-            if format in ['csv', 'parquet']:
-                df = pd.DataFrame(data)
-                DataExporter().export_data(data=df, filename='tabnews_get_contents', type=format)
-            else:
-                DataExporter().export_data(data=data, filename='tabnews_get_contents', type=format)
+            DataExporter().export_data(data=data, filename='tabnews_get_contents', type=format)
 
             page += 1
             time.sleep(2)
@@ -44,4 +40,4 @@ def get_content_last_hours(delta_hours:int, format:str = 'json'):
     
 if __name__ == '__main__':
     delta_hours = -5
-    get_content_last_hours(delta_hours)
+    get_content_last_hours(delta_hours, format='parquet')
